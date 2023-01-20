@@ -4,6 +4,9 @@
 #include <tuple>
 #include <regex>
 #include <ctime>
+#include <queue>
+#include <thread>
+#include <condition_variable>
 #include <mutex>
 #include <fmt/core.h>
 #include <fmt/format.h>
@@ -25,7 +28,7 @@ using json = nlohmann::ordered_json;
 ==============================================*/
 // program version
 const std::string PROGRAM_NAME = "mark-files";
-const std::string PROGRAM_VERSION = "1.4";
+const std::string PROGRAM_VERSION = "1.5";
 
 // default length in characters to align status 
 constexpr std::size_t g_status_len = 50;
@@ -58,39 +61,85 @@ void exec(const std::string& str, std::function<void()> fct)
 const auto get_str = [](const json::iterator& it, const std::string& key) { return it.value().at(key).get<std::string>(); };
 const auto get_uint64 = [](const json::iterator& it, const std::string& key) { return it.value().at(key).get<uint64_t>(); };
 
-// extract infos for all files
-void extract_infos(const std::filesystem::path& path,
-                   const std::filesystem::path& output,
-                   bool restore=false)
+// extract info for one file - thread
+void extract_info(std::mutex& mutex,
+                  std::queue<std::filesystem::path>& files,
+                  json& files_db,
+                  console::progress_bar& progress_bar)
 {
-  // retrieve all files from directory not hidden (not starting with .)
-  std::vector<std::filesystem::path> files;
-  exec("extract all files from directory", [&]() {
-    const auto& dir_filter = [&](const std::filesystem::path& p) {
-      return p.string().find("\\.") == std::string::npos;
-    };
-    files = files::get_files(path,
-                             files::infinite_depth,
-                             false,
-                             dir_filter,
-                             files::default_filter);
-    });
-
-  // extract infos for all files
-  json files_db;
-  if (!files.empty())
+  while (true)
   {
-    console::progress_bar progress_bar("extract infos for all files:", files.size());
-    for (const auto& f : files)
+    // retrieve one file from queue - protected by mutex
+    std::filesystem::path file;
     {
-      const struct stat& file_info = files::get_stat(f);
-      files_db[f.u8string()] = {
-        {"sha", files::get_hash(f)},
+      std::lock_guard<std::mutex> lock(mutex);
+      if (files.empty())
+        break;
+      file = files.front();
+      files.pop();
+    }
+
+    // retrieve infos for one file
+    const struct stat& file_info = files::get_stat(file);
+    const std::string& file_hash = files::get_hash(file);
+
+    // update database and progress_bar - protected by mutex
+    {
+      std::lock_guard<std::mutex> lock(mutex);
+      files_db[file.u8string()] = {
+        {"sha", file_hash},
         {"ctime", file_info.st_ctime},
         {"mtime", file_info.st_mtime}
       };
       progress_bar.tick();
     }
+  }
+}
+
+// extract infos for all files
+void extract_infos(const std::filesystem::path& path,
+                   const std::filesystem::path& output,
+                   bool restore=false)
+{
+  // retrieve all files path from directory not hidden (not starting with .)
+  std::vector<std::filesystem::path> all_files;
+  exec("extract all files' path from directory", [&]() {
+    const auto& dir_filter = [&](const std::filesystem::path& p) {
+      return p.string().find("\\.") == std::string::npos;
+    };
+    all_files = files::get_files(path,
+                                 files::infinite_depth,
+                                 false,
+                                 dir_filter,
+                                 files::default_filter);
+    });
+
+  // extract infos for all files
+  json files_db;
+  if (!all_files.empty())
+  {
+    console::progress_bar progress_bar("extract infos for all files:", all_files.size());
+
+    // initialize a queue of files
+    std::queue<std::filesystem::path> files(
+      std::deque<std::filesystem::path>(all_files.begin(), all_files.end()));
+
+    // start threads
+    std::mutex mutex;
+    const std::size_t max_cpu = static_cast<std::size_t>(std::thread::hardware_concurrency());
+    const std::size_t nb_threads = std::min(files.size(), max_cpu);
+    std::vector<std::thread> threads(nb_threads);
+    for (auto& t : threads)
+      t = std::thread(extract_info,
+                      std::ref(mutex),
+                      std::ref(files),
+                      std::ref(files_db),
+                      std::ref(progress_bar));
+
+    // wait for threads completion
+    for (auto& t : threads)
+      if (t.joinable())
+        t.join();
   }
 
   std::vector<std::tuple<std::string,
