@@ -25,7 +25,7 @@ using json = nlohmann::ordered_json;
 ==============================================*/
 // program version
 const std::string PROGRAM_NAME = "mark-files";
-const std::string PROGRAM_VERSION = "1.3";
+const std::string PROGRAM_VERSION = "1.4";
 
 // default length in characters to align status 
 constexpr std::size_t g_status_len = 50;
@@ -41,7 +41,7 @@ auto add_tag = [](const fmt::color color, const std::string& text) {
 // execute a sequence of actions with tags
 void exec(const std::string& str, std::function<void()> fct)
 {
-  fmt::print(fmt::emphasis::bold, "{:<" + std::to_string(g_status_len) + "}", str + ":");
+  fmt::print(fmt::emphasis::bold, "{:<" + std::to_string(g_status_len) + "}", str + ": ");
   try
   {
     fct();
@@ -84,7 +84,7 @@ void extract_infos(const std::filesystem::path& path,
     for (const auto& f : files)
     {
       const struct stat& file_info = files::get_stat(f);
-      files_db[utf8::to_utf8(f.string())] = {
+      files_db[f.u8string()] = {
         {"sha", files::get_hash(f)},
         {"ctime", file_info.st_ctime},
         {"mtime", file_info.st_mtime}
@@ -164,7 +164,7 @@ void extract_infos(const std::filesystem::path& path,
   exec("write to json file", [&]() {
     std::ofstream file(output);
     if (!file.good())
-      throw std::runtime_error(fmt::format("can't write file: \"{}\"", output.filename().string()));
+      throw std::runtime_error(fmt::format("can't write file: \"{}\"", output.filename().u8string()));
     file << std::setw(2) << files_db << std::endl;
     });
 
@@ -238,7 +238,7 @@ int main(int argc, char** argv)
   {
     // check arguments validity
     if (!std::filesystem::exists(path))
-      throw std::runtime_error(fmt::format("the directory: \"{}\" doesn't exists", path.string()));
+      throw std::runtime_error(fmt::format("the directory: \"{}\" doesn't exists", path.u8string()));
 
     // acquire system wide mutex to avoid multiples executions of mark-files in //
     win::system_mutex mtx("Global\\MarkFiles");
