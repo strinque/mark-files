@@ -11,7 +11,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(SOURCE_FILES
   mark-files.cpp)
 set(HEADER_FILES
-  CrossAppMutex.hpp)
+  )
 set(RESOURCE_FILES
   resource.h
   Resource.rc)
@@ -22,12 +22,9 @@ set_target_properties(${TARGET_EXE} PROPERTIES OUTPUT_NAME ${TARGET_NAME})
 
 # list of required third-party libraries
 find_package(fmt CONFIG REQUIRED)
-find_package(indicators CONFIG REQUIRED)
 find_package(libfort CONFIG REQUIRED)
-find_package(console CONFIG REQUIRED)
-find_package(files CONFIG REQUIRED)
+find_package(winpp CONFIG REQUIRED)
 find_package(nlohmann_json CONFIG REQUIRED)
-find_package(OpenSSL REQUIRED)
 
 # set project compile definitions
 target_compile_definitions(${TARGET_EXE}
@@ -57,13 +54,10 @@ target_link_directories(${TARGET_EXE}
     ${BUILD_PREFIX_PATH}/lib)
 target_link_libraries(${TARGET_EXE}
   PRIVATE
-    indicators::indicators
     libfort::fort
     fmt::fmt-header-only
-    console::console
-    files::files
-    nlohmann_json::nlohmann_json
-    OpenSSL::Crypto)
+    winpp::winpp
+    nlohmann_json::nlohmann_json)
 
 # compress executable using upx
 if(NOT CMAKE_BUILD_TYPE STREQUAL "Debug")
