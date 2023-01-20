@@ -1,0 +1,12 @@
+{
+    "name": "markfiles",
+    "version": "1.0.0",
+    "dependencies": [
+        "fmt",
+        "libfort",
+        "console",
+        "files",
+        "nlohmann-json",
+        "openssl"
+    ]
+}
