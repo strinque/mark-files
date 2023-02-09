@@ -2,9 +2,9 @@
     "name": "markfiles",
     "version": "1.5.0",
     "dependencies": [
-        "fmt",
-        "winpp",
-        "libfort",
-        "nlohmann-json"
+      "fmt",
+      "libfort",
+      "nlohmann-json",
+      "winpp"
     ]
 }
