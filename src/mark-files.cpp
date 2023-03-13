@@ -3,6 +3,7 @@
 #include <vector>
 #include <tuple>
 #include <regex>
+#include <map>
 #include <ctime>
 #include <queue>
 #include <thread>
@@ -28,10 +29,17 @@ using json = nlohmann::ordered_json;
 ==============================================*/
 // program version
 const std::string PROGRAM_NAME = "mark-files";
-const std::string PROGRAM_VERSION = "1.5";
+const std::string PROGRAM_VERSION = "1.5.2";
 
 // default length in characters to align status 
 constexpr std::size_t g_status_len = 50;
+
+// file information that will be extracted/computed
+struct file_infos {
+  std::string sha;
+  std::uint64_t ctime = 0;
+  std::uint64_t mtime = 0;
+};
 
 /*============================================
 | Function definitions
@@ -64,7 +72,7 @@ const auto get_uint64 = [](const json::iterator& it, const std::string& key) { r
 // extract info for one file - thread
 void extract_info(std::mutex& mutex,
                   std::queue<std::filesystem::path>& files,
-                  json& files_db,
+                  std::map<std::string, struct file_infos>& files_infos,
                   console::progress_bar& progress_bar)
 {
   while (true)
@@ -86,10 +94,10 @@ void extract_info(std::mutex& mutex,
     // update database and progress_bar - protected by mutex
     {
       std::lock_guard<std::mutex> lock(mutex);
-      files_db[file.u8string()] = {
-        {"sha", file_hash},
-        {"ctime", file_info.st_ctime},
-        {"mtime", file_info.st_mtime}
+      files_infos[file.u8string()] = {
+        file_hash, 
+        static_cast<uint64_t>(file_info.st_ctime), 
+        static_cast<uint64_t>(file_info.st_mtime)
       };
       progress_bar.tick();
     }
@@ -99,7 +107,7 @@ void extract_info(std::mutex& mutex,
 // extract infos for all files
 void extract_infos(const std::filesystem::path& path,
                    const std::filesystem::path& output,
-                   bool restore=false)
+                   bool restore = false)
 {
   // retrieve all files path from directory not hidden (not starting with .)
   std::vector<std::filesystem::path> all_files;
@@ -115,7 +123,7 @@ void extract_infos(const std::filesystem::path& path,
     });
 
   // extract infos for all files
-  json files_db;
+  std::map<std::string, struct file_infos> files_infos;
   if (!all_files.empty())
   {
     console::progress_bar progress_bar("extract infos for all files:", all_files.size());
@@ -133,7 +141,7 @@ void extract_infos(const std::filesystem::path& path,
       t = std::thread(extract_info,
                       std::ref(mutex),
                       std::ref(files),
-                      std::ref(files_db),
+                      std::ref(files_infos),
                       std::ref(progress_bar));
 
     // wait for threads completion
@@ -141,6 +149,8 @@ void extract_infos(const std::filesystem::path& path,
       if (t.joinable())
         t.join();
   }
+  if (files_infos.empty())
+    throw std::runtime_error("empty directory");
 
   std::vector<std::tuple<std::string,
                          bool, uint64_t, uint64_t,
@@ -157,36 +167,36 @@ void extract_infos(const std::filesystem::path& path,
 
     // detect all files that have changed dates
     exec("detect all files that have changed dates", [&]() {
-      for (auto new_f = files_db.begin(); new_f != files_db.end(); ++new_f)
+      for (auto& [k, v]: files_infos)
       {
         // check if this file existed in the saved database
-        auto& old_f = saved_db.find(new_f.key());
+        auto& old_f = saved_db.find(k);
         if (old_f != saved_db.end())
         {
           // check if the checksum have changed
-          if (get_str(old_f, "sha") == get_str(new_f, "sha"))
+          if (get_str(old_f, "sha") == v.sha)
           {
             // checksum are identical => dates needs to be restored if changed
             bool ctime = false;
             const uint64_t old_ctime = get_uint64(old_f, "ctime");
-            const uint64_t new_ctime = get_uint64(new_f, "ctime");
+            const uint64_t new_ctime = v.ctime;
             if (old_ctime != new_ctime)
             {
-              new_f.value()["ctime"] = old_ctime;
+              v.ctime = old_ctime;
               ctime = true;
             }
 
             bool mtime = false;
             const uint64_t old_mtime = get_uint64(old_f, "mtime");
-            const uint64_t new_mtime = get_uint64(new_f, "mtime");
+            const uint64_t new_mtime = v.mtime;
             if (old_mtime != new_mtime)
             {
-              new_f.value()["mtime"] = old_mtime;
+              v.mtime = old_mtime;
               mtime = true;
             }
 
             if (ctime || mtime)
-              to_update.push_back(std::make_tuple(new_f.key(), 
+              to_update.push_back(std::make_tuple(k, 
                                                   ctime, old_ctime, new_ctime, 
                                                   mtime, old_mtime, new_mtime));
           }
@@ -211,10 +221,42 @@ void extract_infos(const std::filesystem::path& path,
 
   // write json to file
   exec("write to json file", [&]() {
-    std::ofstream file(output);
+    std::ofstream file(output, std::ios::binary);
     if (!file.good())
       throw std::runtime_error(fmt::format("can't write file: \"{}\"", output.filename().u8string()));
-    file << std::setw(2) << files_db << std::endl;
+
+    // detect maximum length of filename
+    std::size_t max_len = 0;
+    for (const auto& [k, v] : files_infos)
+      if (k.size() > max_len)
+        max_len = k.size();
+
+    // reconstruct json-optimized file manually
+    std::string line_fmt;
+    line_fmt += R"("name": "{:<)" + std::to_string(max_len) + R"(}, )";
+    line_fmt += R"("sha": "{}", )";
+    line_fmt += R"("ctime": {}, )";
+    line_fmt += R"("mtime": {})";
+    std::string content;
+    content += "{\n";
+    content += "  \"files\": [\n";
+    for (const auto& [k, v] : files_infos)
+    {
+      content += "    { ";
+      content += fmt::format(line_fmt,
+        k + "\"",
+        v.sha,
+        v.ctime,
+        v.mtime);
+      content += " }";
+      content += (k == files_infos.rbegin()->first) ? "" : ",";
+      content += "\n";
+    }
+    content += "  ]\n";
+    content += "}";
+
+    // write to file
+    file << content;
     });
 
   // display table of update files
