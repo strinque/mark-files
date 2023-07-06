@@ -29,7 +29,7 @@ using json = nlohmann::ordered_json;
 ==============================================*/
 // program version
 const std::string PROGRAM_NAME = "mark-files";
-const std::string PROGRAM_VERSION = "1.5.2";
+const std::string PROGRAM_VERSION = "1.5.3";
 
 // default length in characters to align status 
 constexpr std::size_t g_status_len = 50;
@@ -244,7 +244,7 @@ void extract_infos(const std::filesystem::path& path,
     {
       content += "    { ";
       content += fmt::format(line_fmt,
-        k + "\"",
+        std::regex_replace(k, std::regex("\\\\"), "\\\\") + "\"",
         v.sha,
         v.ctime,
         v.mtime);
