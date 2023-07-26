@@ -29,7 +29,7 @@ using json = nlohmann::ordered_json;
 ==============================================*/
 // program version
 const std::string PROGRAM_NAME = "mark-files";
-const std::string PROGRAM_VERSION = "1.5.3";
+const std::string PROGRAM_VERSION = "1.6.0";
 
 // default length in characters to align status 
 constexpr std::size_t g_status_len = 50;
@@ -64,10 +64,6 @@ void exec(const std::string& str, std::function<void()> fct)
     throw ex;
   }
 }
-
-// lambda functions to read json values
-const auto get_str = [](const json::iterator& it, const std::string& key) { return it.value().at(key).get<std::string>(); };
-const auto get_uint64 = [](const json::iterator& it, const std::string& key) { return it.value().at(key).get<uint64_t>(); };
 
 // extract info for one file - thread
 void extract_info(std::mutex& mutex,
@@ -167,39 +163,53 @@ void extract_infos(const std::filesystem::path& path,
 
     // detect all files that have changed dates
     exec("detect all files that have changed dates", [&]() {
-      for (auto& [k, v]: files_infos)
+      if (saved_db.contains("files") && saved_db["files"].is_array())
       {
-        // check if this file existed in the saved database
-        auto& old_f = saved_db.find(k);
-        if (old_f != saved_db.end())
+        for (auto& i : saved_db["files"])
         {
+          // check entry validity
+          if ((!i.contains("name")  || !i["name"].is_string())  ||
+              (!i.contains("sha")   || !i["sha"].is_string())   ||
+              (!i.contains("ctime") || !i["ctime"].is_number()) ||
+              (!i.contains("mtime") || !i["mtime"].is_number()))
+            continue;
+
+          // retrieve fields of this entry
+          const std::string& name    = i["name"].get<std::string>();
+          const std::string& old_sha = i["sha"].get<std::string>();
+          const uint64_t old_ctime   = i["ctime"].get<uint64_t>();
+          const uint64_t old_mtime   = i["mtime"].get<uint64_t>();
+
+          // check if this file existed in the saved database
+          auto it = files_infos.find(name);
+          if (it == files_infos.end())
+            continue;
+
           // check if the checksum have changed
-          if (get_str(old_f, "sha") == v.sha)
+          if (it->second.sha != old_sha)
+            continue;
+
+          // checksum are identical => dates needs to be restored if changed
+          bool ctime = false;
+          const uint64_t new_ctime = it->second.ctime;
+          if (new_ctime != old_ctime)
           {
-            // checksum are identical => dates needs to be restored if changed
-            bool ctime = false;
-            const uint64_t old_ctime = get_uint64(old_f, "ctime");
-            const uint64_t new_ctime = v.ctime;
-            if (old_ctime != new_ctime)
-            {
-              v.ctime = old_ctime;
-              ctime = true;
-            }
-
-            bool mtime = false;
-            const uint64_t old_mtime = get_uint64(old_f, "mtime");
-            const uint64_t new_mtime = v.mtime;
-            if (old_mtime != new_mtime)
-            {
-              v.mtime = old_mtime;
-              mtime = true;
-            }
-
-            if (ctime || mtime)
-              to_update.push_back(std::make_tuple(k, 
-                                                  ctime, old_ctime, new_ctime, 
-                                                  mtime, old_mtime, new_mtime));
+            it->second.ctime = old_ctime;
+            ctime = true;
           }
+
+          bool mtime = false;
+          const uint64_t new_mtime = it->second.mtime;
+          if (new_mtime != old_mtime)
+          {
+            it->second.mtime = old_mtime;
+            mtime = true;
+          }
+
+          if (ctime || mtime)
+            to_update.push_back(std::make_tuple(name, 
+                                                ctime, old_ctime, new_ctime,
+                                                mtime, old_mtime, new_mtime));
         }
       }
       });
@@ -332,6 +342,7 @@ int main(int argc, char** argv)
       throw std::runtime_error(fmt::format("the directory: \"{}\" doesn't exists", path.u8string()));
 
     // acquire system wide mutex to avoid multiples executions of mark-files in //
+    fmt::print(fmt::emphasis::bold, "{}\n", "waiting for other mark-files programs to terminate...");
     win::system_mutex mtx("Global\\MarkFiles");
     std::lock_guard<win::system_mutex> lock(mtx);
 
